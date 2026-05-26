@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, Mailbox } from "~/types";
+import type { Email, Folder, Mailbox, MailboxConnection } from "~/types";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -92,6 +92,13 @@ interface EmailListResponse {
 	totalCount: number;
 }
 
+interface ConnectionResponse {
+	connection: MailboxConnection;
+	authUrl?: string;
+	ingestUrl?: string;
+	ingestToken?: string;
+}
+
 // ---------- API client ----------
 
 const api = {
@@ -109,6 +116,14 @@ const api = {
 		put<Mailbox>(`/api/v1/mailboxes/${mailboxId}`, { settings }),
 	deleteMailbox: (mailboxId: string) =>
 		del<void>(`/api/v1/mailboxes/${mailboxId}`),
+	listConnections: (mailboxId: string) =>
+		get<MailboxConnection[]>(`/api/v1/mailboxes/${mailboxId}/connections`),
+	createConnection: (mailboxId: string, payload: unknown) =>
+		post<ConnectionResponse>(`/api/v1/mailboxes/${mailboxId}/connections`, payload),
+	deleteConnection: (mailboxId: string, connectionId: string) =>
+		del<void>(`/api/v1/mailboxes/${mailboxId}/connections/${connectionId}`),
+	syncConnection: (mailboxId: string, connectionId: string) =>
+		post<unknown>(`/api/v1/mailboxes/${mailboxId}/connections/${connectionId}/sync`),
 
 	// Emails
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>

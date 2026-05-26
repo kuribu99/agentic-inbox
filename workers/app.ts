@@ -9,6 +9,7 @@ import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
 import { EmailMCP } from "./mcp";
 import type { Env } from "./types";
+import { runSyncCron } from "./sync";
 
 export { MailboxDO } from "./durableObject";
 export { EmailAgent } from "./agent";
@@ -110,6 +111,9 @@ app.all("*", (c) => {
 // Export the Hono app as the default export with an email handler
 export default {
 	fetch: app.fetch,
+	scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+		ctx.waitUntil(runSyncCron(env, ctx));
+	},
 	async email(
 		event: { raw: ReadableStream; rawSize: number },
 		env: Env,

@@ -29,6 +29,11 @@ export const emails = sqliteTable("emails", {
 	thread_id: text("thread_id"),
 	message_id: text("message_id"),
 	raw_headers: text("raw_headers"),
+	source_provider: text("source_provider"),
+	source_message_id: text("source_message_id"),
+	source_thread_id: text("source_thread_id"),
+	source_folder_id: text("source_folder_id"),
+	source_account_id: text("source_account_id"),
 });
 
 export const attachments = sqliteTable("attachments", {
@@ -41,4 +46,11 @@ export const attachments = sqliteTable("attachments", {
 	size: integer("size").notNull(),
 	content_id: text("content_id"),
 	disposition: text("disposition"),
+});
+
+export const connectionSecrets = sqliteTable("connection_secrets", {
+	id: text("id").primaryKey(),
+	provider: text("provider").notNull(),
+	encrypted: text("encrypted").notNull(),
+	updated_at: text("updated_at").notNull(),
 });

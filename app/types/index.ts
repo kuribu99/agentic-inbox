@@ -8,12 +8,33 @@ export interface SignatureSettings {
 	html?: string;
 }
 
+export type ConnectionProvider = "gmail" | "outlook" | "imap" | "smtp";
+export type ConnectionStatus = "pending" | "connected" | "error";
+export type SendMode = "cloudflare" | "provider";
+
+export interface MailboxConnection {
+	id: string;
+	provider: ConnectionProvider;
+	email: string;
+	displayName?: string;
+	status: ConnectionStatus;
+	sendMode: SendMode;
+	folderMap?: Record<string, string>;
+	scopes?: string[];
+	externalAccountId?: string;
+	lastSync?: string;
+	lastError?: string | null;
+	createdAt?: string;
+	updatedAt?: string;
+}
+
 export interface MailboxSettings {
 	fromName?: string;
 	forwarding?: { enabled: boolean; email: string };
 	signature?: SignatureSettings;
 	autoReply?: { enabled: boolean; subject: string; message: string };
 	agentSystemPrompt?: string;
+	connections?: MailboxConnection[];
 }
 
 export interface Mailbox {

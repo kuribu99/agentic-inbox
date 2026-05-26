@@ -5,4 +5,12 @@
 export interface Env extends Cloudflare.Env {
 	POLICY_AUD: string;
 	TEAM_DOMAIN: string;
+	CONNECTIONS_KEY: string;
+	PUBLIC_BASE_URL?: string;
+	OAUTH_GMAIL_CLIENT_ID?: string;
+	OAUTH_GMAIL_CLIENT_SECRET?: string;
+	OAUTH_OUTLOOK_CLIENT_ID?: string;
+	OAUTH_OUTLOOK_CLIENT_SECRET?: string;
+	OAUTH_OUTLOOK_TENANT?: string;
+	INBOUND_SHARED_SECRET?: string;
 }

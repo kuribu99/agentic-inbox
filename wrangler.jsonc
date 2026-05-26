@@ -14,7 +14,9 @@
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
 		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"EMAIL_ADDRESSES": [],
+		"PUBLIC_BASE_URL": "https://your-worker-domain.example.com",
+		"OAUTH_OUTLOOK_TENANT": "common"
 	},
 	"send_email": [
 		{
@@ -47,6 +49,9 @@
 				"class_name": "EmailMCP"
 			}
 		]
+	},
+	"triggers": {
+		"crons": ["*/10 * * * *"]
 	},
 	"migrations": [
 		{

@@ -87,6 +87,11 @@ interface EmailData {
 	thread_id?: string | null;
 	message_id?: string | null;
 	raw_headers?: string | null;
+	source_provider?: string | null;
+	source_message_id?: string | null;
+	source_thread_id?: string | null;
+	source_folder_id?: string | null;
+	source_account_id?: string | null;
 }
 
 interface AttachmentData {
@@ -560,6 +565,49 @@ export class MailboxDO extends DurableObject<Env> {
 		return emailAttachments;
 	}
 
+	async findEmailBySource(provider: string, messageId: string) {
+		const row = this.db
+			.select({ id: schema.emails.id })
+			.from(schema.emails)
+			.where(
+				and(
+					eq(schema.emails.source_provider, provider),
+					eq(schema.emails.source_message_id, messageId),
+				),
+			)
+			.get();
+		return row?.id ?? null;
+	}
+
+	async getConnectionSecret(connectionId: string) {
+		return (
+			this.db
+				.select()
+				.from(schema.connectionSecrets)
+				.where(eq(schema.connectionSecrets.id, connectionId))
+				.get() ?? null
+		);
+	}
+
+	async setConnectionSecret(connectionId: string, provider: string, encrypted: string) {
+		const now = new Date().toISOString();
+		this.db
+			.insert(schema.connectionSecrets)
+			.values({ id: connectionId, provider, encrypted, updated_at: now })
+			.onConflictDoUpdate({
+				target: schema.connectionSecrets.id,
+				set: { provider, encrypted, updated_at: now },
+			})
+			.run();
+	}
+
+	async deleteConnectionSecret(connectionId: string) {
+		this.db
+			.delete(schema.connectionSecrets)
+			.where(eq(schema.connectionSecrets.id, connectionId))
+			.run();
+	}
+
 	async getAttachment(id: string) {
 		return (
 			this.db
@@ -862,6 +910,11 @@ export class MailboxDO extends DurableObject<Env> {
 				thread_id: email.thread_id ?? null,
 				message_id: email.message_id ?? null,
 				raw_headers: email.raw_headers ?? null,
+				source_provider: email.source_provider ?? null,
+				source_message_id: email.source_message_id ?? null,
+				source_thread_id: email.source_thread_id ?? null,
+				source_folder_id: email.source_folder_id ?? null,
+				source_account_id: email.source_account_id ?? null,
 			})
 			.run();
 

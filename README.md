@@ -62,6 +62,32 @@ npm run dev
 1. Set your domain in `wrangler.jsonc`
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
 
+### OAuth Connections (Gmail / Outlook)
+
+Agentic Inbox can sync Gmail and Outlook accounts via OAuth. Configure the following:
+
+1. Set `PUBLIC_BASE_URL` to your deployed Worker URL (used for OAuth redirect URLs).
+2. Set `CONNECTIONS_KEY` to a **base64-encoded 32-byte key** (used to encrypt tokens).
+3. Add OAuth client IDs/secrets:
+   - `OAUTH_GMAIL_CLIENT_ID`, `OAUTH_GMAIL_CLIENT_SECRET`
+   - `OAUTH_OUTLOOK_CLIENT_ID`, `OAUTH_OUTLOOK_CLIENT_SECRET`, `OAUTH_OUTLOOK_TENANT` (default: `common`)
+4. Ensure the OAuth redirect URL is:
+   - `https://<your-worker-domain>/api/v1/oauth/gmail/callback`
+   - `https://<your-worker-domain>/api/v1/oauth/outlook/callback`
+
+### SMTP / IMAP Inbound
+
+Cloudflare Workers cannot directly connect to IMAP/POP3. For providers that only support SMTP forwarding (e.g. Lark),
+create an **SMTP Inbound** connection in Settings and post raw RFC822 email to:
+
+```
+POST /api/v1/mailboxes/:mailboxId/inbound/:connectionId
+Authorization: ******
+Content-Type: message/rfc822
+```
+
+You can also POST JSON with `{ "raw": "<base64>" }`. Use `INBOUND_SHARED_SECRET` for a global fallback token.
+
 ### Deploy
 
 ```bash
@@ -75,6 +101,7 @@ npm run deploy
 - [Email Service](https://developers.cloudflare.com/email-service/) enabled for sending
 - [Workers AI](https://developers.cloudflare.com/workers-ai/) enabled (for the agent)
 - [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) configured for deployed/shared environments (required in production)
+- OAuth apps for Gmail/Outlook (optional, for external inbox sync)
 
 Any user who passes the shared Cloudflare Access policy can access all mailboxes in this app by design. This includes the MCP server at `/mcp` -- external AI tools (Claude Code, Cursor, etc.) connected via MCP can operate on any mailbox by passing a `mailboxId` parameter. There is no per-mailbox authorization; the Cloudflare Access policy is the single trust boundary.
 

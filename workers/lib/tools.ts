@@ -27,7 +27,7 @@ import {
 	buildThreadingHeaders,
 } from "./email-helpers";
 import { verifyDraft } from "./ai";
-import { sendEmail } from "../email-sender";
+import { sendOutgoingEmail } from "./outgoing";
 import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 
@@ -434,12 +434,16 @@ export async function toolSendReply(
 	const fullBodyHtml = sanitizedBody + quotedBlock;
 
 	try {
-		await sendEmail(env.EMAIL, {
-			to: params.to,
-			from: mailboxId,
-			subject: params.subject,
-			html: fullBodyHtml,
-			headers: buildThreadingHeaders(originalMsgId, references),
+		await sendOutgoingEmail({
+			env,
+			mailboxId,
+			message: {
+				to: params.to,
+				from: mailboxId,
+				subject: params.subject,
+				html: fullBodyHtml,
+				headers: buildThreadingHeaders(originalMsgId, references),
+			},
 		});
 	} catch (e) {
 		console.error("Email send failed:", (e as Error).message);
@@ -499,11 +503,15 @@ export async function toolSendEmail(
 	}
 
 	try {
-		await sendEmail(env.EMAIL, {
-			to: params.to,
-			from: mailboxId,
-			subject: params.subject,
-			html: sanitizedBody,
+		await sendOutgoingEmail({
+			env,
+			mailboxId,
+			message: {
+				to: params.to,
+				from: mailboxId,
+				subject: params.subject,
+				html: sanitizedBody,
+			},
 		});
 	} catch (e) {
 		console.error("Email send failed:", (e as Error).message);

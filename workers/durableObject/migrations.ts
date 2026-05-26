@@ -168,4 +168,26 @@ export const mailboxMigrations: Migration[] = [
             CREATE INDEX IF NOT EXISTS idx_emails_folder_date ON emails(folder_id, date DESC);
         `,
 	},
+	{
+		name: "9_add_source_metadata_and_connections",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN source_provider TEXT;
+            ALTER TABLE emails ADD COLUMN source_message_id TEXT;
+            ALTER TABLE emails ADD COLUMN source_thread_id TEXT;
+            ALTER TABLE emails ADD COLUMN source_folder_id TEXT;
+            ALTER TABLE emails ADD COLUMN source_account_id TEXT;
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_source_message
+                ON emails(source_provider, source_message_id);
+            CREATE INDEX IF NOT EXISTS idx_emails_source_thread
+                ON emails(source_provider, source_thread_id);
+
+            CREATE TABLE connection_secrets (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                encrypted TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+        `),
+	},
 ];

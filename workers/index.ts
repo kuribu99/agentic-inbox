@@ -6,8 +6,7 @@ import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import PostalMime from "postal-mime";
 import { z } from "zod";
-import { sendEmail } from "./email-sender";
-import { storeAttachments, type StoredAttachment } from "./lib/attachments";
+import { storeAttachments } from "./lib/attachments";
 import {
 	validateSender,
 	SenderValidationError,
@@ -20,6 +19,30 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import {
+	DEFAULT_GMAIL_SCOPES,
+	buildGmailAuthUrl,
+	exchangeGmailCode,
+} from "./providers/gmail";
+import {
+	DEFAULT_OUTLOOK_SCOPES,
+	buildOutlookAuthUrl,
+	exchangeOutlookCode,
+} from "./providers/outlook";
+import {
+	ConnectionProvider,
+	ensureConnections,
+	generateConnectionId,
+	loadMailboxSettings,
+	removeConnection,
+	saveMailboxSettings,
+	upsertConnection,
+} from "./lib/connections";
+import { decryptJson, encryptJson } from "./lib/crypto";
+import { sendOutgoingEmail } from "./lib/outgoing";
+import { bufferFromRequest, ingestRawEmail, streamToArrayBuffer } from "./lib/ingest";
+import { decodeState, encodeState, generatePkcePair } from "./lib/oauth";
+import { syncConnection } from "./sync";
 
 type AppContext = Context<MailboxContext>;
 
@@ -42,6 +65,23 @@ const DraftBody = z.object({
 	draft_id: z.string().optional(),
 });
 
+const CreateConnectionBody = z.object({
+	provider: z.enum(["gmail", "outlook", "imap", "smtp"]),
+	email: z.string().email(),
+	displayName: z.string().optional(),
+	sendMode: z.enum(["cloudflare", "provider"]).optional(),
+	scopes: z.array(z.string()).optional(),
+	imap: z
+		.object({
+			host: z.string().min(1),
+			port: z.coerce.number().int().min(1),
+			username: z.string().min(1),
+			password: z.string().min(1),
+			useTLS: z.boolean().default(true),
+		})
+		.optional(),
+});
+
 // -- Helpers --------------------------------------------------------
 
 function slugify(text: string) { // can return "" for non-alphanumeric input
@@ -61,6 +101,10 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 	const v = c.req.query(key);
 	if (v === undefined || v === "") return undefined;
 	return v === "true" || v === "1";
+}
+
+function getBaseUrl(c: AppContext) {
+	return c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin;
 }
 
 // -- App & middleware -----------------------------------------------
@@ -140,6 +184,321 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	return c.body(null, 204);
 });
 
+// -- Connections ----------------------------------------------------
+
+app.get("/api/v1/mailboxes/:mailboxId/connections", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const settings = await loadMailboxSettings(c.env.BUCKET, mailboxId);
+	return c.json(ensureConnections(settings));
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/connections", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const body = CreateConnectionBody.parse(await c.req.json());
+	const settings = await loadMailboxSettings(c.env.BUCKET, mailboxId);
+	const connectionId = generateConnectionId(body.provider as ConnectionProvider);
+	const now = new Date().toISOString();
+
+	const connection = {
+		id: connectionId,
+		provider: body.provider,
+		email: body.email,
+		displayName: body.displayName,
+		status: body.provider === "gmail" || body.provider === "outlook" ? "pending" : "connected",
+		sendMode:
+			body.sendMode ??
+			(body.provider === "gmail" || body.provider === "outlook"
+				? "provider"
+				: "cloudflare"),
+		scopes:
+			body.scopes ??
+			(body.provider === "gmail"
+				? DEFAULT_GMAIL_SCOPES
+				: body.provider === "outlook"
+					? DEFAULT_OUTLOOK_SCOPES
+					: undefined),
+		createdAt: now,
+		updatedAt: now,
+		lastError: null,
+	};
+
+	let response: Record<string, unknown> = { connection };
+
+	if (body.provider === "gmail" || body.provider === "outlook") {
+		const { verifier, challenge } = await generatePkcePair();
+		const statePayload = {
+			mailboxId,
+			connectionId,
+			provider: body.provider,
+			codeVerifier: verifier,
+			createdAt: now,
+		};
+		const state = await encodeState(c.env, statePayload);
+		const baseUrl = getBaseUrl(c);
+		const redirectUri = `${baseUrl}/api/v1/oauth/${body.provider}/callback`;
+
+		if (body.provider === "gmail") {
+			if (!c.env.OAUTH_GMAIL_CLIENT_ID) {
+				return c.json({ error: "Gmail OAuth client is not configured" }, 500);
+			}
+			response = {
+				connection,
+				authUrl: buildGmailAuthUrl({
+					clientId: c.env.OAUTH_GMAIL_CLIENT_ID,
+					redirectUri,
+					scopes: connection.scopes || DEFAULT_GMAIL_SCOPES,
+					state,
+					codeChallenge: challenge,
+				}),
+			};
+		} else {
+			if (!c.env.OAUTH_OUTLOOK_CLIENT_ID) {
+				return c.json({ error: "Outlook OAuth client is not configured" }, 500);
+			}
+			response = {
+				connection,
+				authUrl: buildOutlookAuthUrl({
+					tenant: c.env.OAUTH_OUTLOOK_TENANT || "common",
+					clientId: c.env.OAUTH_OUTLOOK_CLIENT_ID,
+					redirectUri,
+					scopes: connection.scopes || DEFAULT_OUTLOOK_SCOPES,
+					state,
+					codeChallenge: challenge,
+				}),
+			};
+		}
+	} else if (body.provider === "imap") {
+		if (!body.imap) {
+			return c.json({ error: "IMAP credentials are required" }, 400);
+		}
+		const stub = c.var.mailboxStub as unknown as {
+			setConnectionSecret: (id: string, provider: string, encrypted: string) => Promise<void>;
+		};
+		const secretPayload = {
+			kind: "imap",
+			host: body.imap.host,
+			port: body.imap.port,
+			username: body.imap.username,
+			password: body.imap.password,
+			useTLS: body.imap.useTLS ?? true,
+		};
+		const encrypted = await encryptJson(c.env, secretPayload);
+		await stub.setConnectionSecret(connectionId, body.provider, encrypted);
+	} else if (body.provider === "smtp") {
+		const stub = c.var.mailboxStub as unknown as {
+			setConnectionSecret: (id: string, provider: string, encrypted: string) => Promise<void>;
+		};
+		const ingestToken = crypto.randomUUID();
+		const encrypted = await encryptJson(c.env, {
+			kind: "smtp",
+			token: ingestToken,
+		});
+		await stub.setConnectionSecret(connectionId, body.provider, encrypted);
+		response = {
+			connection,
+			ingestUrl: `${getBaseUrl(c)}/api/v1/mailboxes/${mailboxId}/inbound/${connectionId}`,
+			ingestToken,
+		};
+	}
+
+	const updatedSettings = upsertConnection(settings, connection);
+	await saveMailboxSettings(c.env.BUCKET, mailboxId, updatedSettings);
+	return c.json(response, 201);
+});
+
+app.post("/api/v1/mailboxes/:mailboxId/connections/:connectionId/sync", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const connectionId = c.req.param("connectionId")!;
+	const settings = await loadMailboxSettings(c.env.BUCKET, mailboxId);
+	const connections = ensureConnections(settings);
+	const connection = connections.find((conn) => conn.id === connectionId);
+	if (!connection) return c.json({ error: "Connection not found" }, 404);
+	const updated = await syncConnection(c.env, c.executionCtx, mailboxId, connection);
+	const updatedSettings = {
+		...settings,
+		connections: connections.map((conn) => (conn.id === connectionId ? updated : conn)),
+	};
+	await saveMailboxSettings(c.env.BUCKET, mailboxId, updatedSettings);
+	return c.json(updated);
+});
+
+app.delete("/api/v1/mailboxes/:mailboxId/connections/:connectionId", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const connectionId = c.req.param("connectionId")!;
+	const settings = await loadMailboxSettings(c.env.BUCKET, mailboxId);
+	const updatedSettings = removeConnection(settings, connectionId);
+	await saveMailboxSettings(c.env.BUCKET, mailboxId, updatedSettings);
+	const stub = c.var.mailboxStub as unknown as {
+		deleteConnectionSecret: (id: string) => Promise<void>;
+	};
+	await stub.deleteConnectionSecret(connectionId);
+	return c.body(null, 204);
+});
+
+// -- OAuth callbacks ------------------------------------------------
+
+app.get("/api/v1/oauth/:provider/callback", async (c) => {
+	const provider = c.req.param("provider");
+	const code = c.req.query("code");
+	const state = c.req.query("state");
+	if (!code || !state) return c.json({ error: "Missing OAuth code or state" }, 400);
+
+	const payload = await decodeState<{
+		mailboxId: string;
+		connectionId: string;
+		provider: string;
+		codeVerifier: string;
+		createdAt: string;
+	}>(c.env, state);
+	if (payload.provider !== provider) {
+		return c.json({ error: "OAuth provider mismatch" }, 400);
+	}
+
+	const settings = await loadMailboxSettings(c.env.BUCKET, payload.mailboxId);
+	const connections = ensureConnections(settings);
+	const connection = connections.find((conn) => conn.id === payload.connectionId);
+	if (!connection) return c.json({ error: "Connection not found" }, 404);
+
+	const baseUrl = c.env.PUBLIC_BASE_URL || new URL(c.req.url).origin;
+	const redirectUri = `${baseUrl}/api/v1/oauth/${provider}/callback`;
+
+	let tokenResponse: {
+		access_token: string;
+		refresh_token?: string;
+		expires_in?: number;
+		scope?: string;
+		token_type?: string;
+	};
+	if (provider === "gmail") {
+		if (!c.env.OAUTH_GMAIL_CLIENT_ID || !c.env.OAUTH_GMAIL_CLIENT_SECRET) {
+			return c.json({ error: "Gmail OAuth client is not configured" }, 500);
+		}
+		tokenResponse = await exchangeGmailCode({
+			clientId: c.env.OAUTH_GMAIL_CLIENT_ID,
+			clientSecret: c.env.OAUTH_GMAIL_CLIENT_SECRET,
+			redirectUri,
+			code,
+			codeVerifier: payload.codeVerifier,
+		});
+	} else if (provider === "outlook") {
+		if (!c.env.OAUTH_OUTLOOK_CLIENT_ID || !c.env.OAUTH_OUTLOOK_CLIENT_SECRET) {
+			return c.json({ error: "Outlook OAuth client is not configured" }, 500);
+		}
+		tokenResponse = await exchangeOutlookCode({
+			tenant: c.env.OAUTH_OUTLOOK_TENANT || "common",
+			clientId: c.env.OAUTH_OUTLOOK_CLIENT_ID,
+			clientSecret: c.env.OAUTH_OUTLOOK_CLIENT_SECRET,
+			redirectUri,
+			code,
+			codeVerifier: payload.codeVerifier,
+		});
+	} else {
+		return c.json({ error: "Unsupported OAuth provider" }, 400);
+	}
+
+	const stub = c.env.MAILBOX.get(
+		c.env.MAILBOX.idFromName(payload.mailboxId),
+	) as unknown as {
+		setConnectionSecret: (id: string, provider: string, encrypted: string) => Promise<void>;
+	};
+	const encrypted = await encryptJson(c.env, {
+		kind: "oauth",
+		accessToken: tokenResponse.access_token,
+		refreshToken: tokenResponse.refresh_token,
+		expiresAt: tokenResponse.expires_in
+			? new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString()
+			: undefined,
+		scope: tokenResponse.scope,
+		tokenType: tokenResponse.token_type,
+	});
+	await stub.setConnectionSecret(payload.connectionId, provider, encrypted);
+
+	const updatedConnection = {
+		...connection,
+		status: "connected",
+		lastError: null,
+		updatedAt: new Date().toISOString(),
+	};
+	const updatedSettings = {
+		...settings,
+		connections: connections.map((conn) =>
+			conn.id === connection.id ? updatedConnection : conn,
+		),
+	};
+	await saveMailboxSettings(c.env.BUCKET, payload.mailboxId, updatedSettings);
+
+	const redirectTo = `${baseUrl}/mailbox/${payload.mailboxId}/settings?connected=${provider}`;
+	return c.redirect(redirectTo);
+});
+
+// -- Inbound SMTP/IMAP HTTP ingestion -------------------------------
+
+app.post("/api/v1/mailboxes/:mailboxId/inbound/:connectionId", async (c) => {
+	const mailboxId = c.req.param("mailboxId")!;
+	const connectionId = c.req.param("connectionId")!;
+	const authHeader = c.req.header("authorization") || "";
+	const bearerToken = authHeader.startsWith("Bearer ")
+		? authHeader.slice("Bearer ".length).trim()
+		: undefined;
+	const token = bearerToken || c.req.query("token") || "";
+	if (!token) return c.json({ error: "Missing inbound token" }, 401);
+
+	const stub = c.var.mailboxStub as unknown as {
+		getConnectionSecret: (id: string) => Promise<{ encrypted: string } | null>;
+	};
+	const secretRow = await stub.getConnectionSecret(connectionId);
+	let authorized = false;
+	if (secretRow) {
+		const secret = await decryptJson<{ kind: string; token?: string }>(
+			c.env,
+			secretRow.encrypted,
+		);
+		if (secret.kind === "smtp" && secret.token === token) {
+			authorized = true;
+		}
+	}
+	if (!authorized && c.env.INBOUND_SHARED_SECRET) {
+		authorized = token === c.env.INBOUND_SHARED_SECRET;
+	}
+	if (!authorized) return c.json({ error: "Invalid inbound token" }, 403);
+
+	let raw: Uint8Array;
+	let sourceOverrides: Record<string, unknown> | undefined;
+	const contentType = c.req.header("content-type") || "";
+	if (contentType.includes("application/json")) {
+		const body = (await c.req.json()) as { raw: string; source?: Record<string, unknown> };
+		if (!body.raw) return c.json({ error: "Missing raw payload" }, 400);
+		const binary = atob(body.raw);
+		raw = new Uint8Array(binary.length);
+		for (let i = 0; i < binary.length; i++) raw[i] = binary.charCodeAt(i);
+		sourceOverrides = body.source;
+	} else {
+		raw = await bufferFromRequest(c.req.raw);
+	}
+
+	const settings = await loadMailboxSettings(c.env.BUCKET, mailboxId);
+	const connections = ensureConnections(settings);
+	const connection = connections.find((conn) => conn.id === connectionId);
+	if (!connection) return c.json({ error: "Connection not found" }, 404);
+	const provider = connection.provider;
+
+	const result = await ingestRawEmail({
+		env: c.env,
+		ctx: c.executionCtx,
+		mailboxId,
+		raw,
+		source: {
+			provider: (sourceOverrides?.provider as ConnectionProvider) || provider,
+			messageId: sourceOverrides?.messageId as string | undefined,
+			threadId: sourceOverrides?.threadId as string | undefined,
+			folderId: sourceOverrides?.folderId as string | undefined,
+			accountId: connection?.externalAccountId || connection?.email,
+		},
+	});
+
+	return c.json(result, 202);
+});
+
 // -- Emails ---------------------------------------------------------
 
 app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
@@ -202,11 +561,31 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	}, attachmentData);
 
 	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
-			to, cc, bcc, from, subject, html, text,
-			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
-			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
-		}).catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
+		sendOutgoingEmail({
+			env: c.env,
+			mailboxId,
+			message: {
+				to,
+				cc,
+				bcc,
+				from,
+				subject,
+				html,
+				text,
+				attachments: attachments?.map((att) => ({
+					content: att.content,
+					filename: att.filename,
+					type: att.type,
+					disposition: att.disposition || "attachment",
+					contentId: att.contentId,
+				})),
+				...(in_reply_to
+					? { headers: buildThreadingHeaders(in_reply_to, references || []) }
+					: {}),
+			},
+		}).catch((e) =>
+			console.error("Deferred email delivery failed:", (e as Error).message),
+		),
 	);
 	return c.json({ id: messageId, status: "sent" }, 202);
 });
@@ -327,86 +706,59 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 
 // -- Receive inbound email ------------------------------------------
 
-const MAX_EMAIL_SIZE = 25 * 1024 * 1024;
-
-async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
-	if (streamSize > MAX_EMAIL_SIZE) throw new Error(`Email too large: ${streamSize} bytes exceeds ${MAX_EMAIL_SIZE} byte limit`);
-	if (streamSize <= 0) throw new Error(`Invalid stream size: ${streamSize}`);
-	const result = new Uint8Array(streamSize);
-	let bytesRead = 0;
-	const reader = stream.getReader();
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		if (bytesRead + value.length > streamSize) { reader.cancel(); throw new Error(`Stream exceeds declared size`); }
-		result.set(value, bytesRead);
-		bytesRead += value.length;
-	}
-	return result;
-}
-
-async function receiveEmail(event: { raw: ReadableStream; rawSize: number }, env: Env, ctx: ExecutionContext) {
+async function receiveEmail(
+	event: { raw: ReadableStream; rawSize: number },
+	env: Env,
+	ctx: ExecutionContext,
+) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	const parsedEmail = await new PostalMime().parse(rawEmail);
 
-	if (!parsedEmail.to?.length || !parsedEmail.to[0].address) throw new Error("received email with empty to");
+	if (!parsedEmail.to?.length || !parsedEmail.to[0].address) {
+		throw new Error("received email with empty to");
+	}
 
-	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[]).map((a) => a.toLowerCase());
-	const allRecipients = parsedEmail.to.map((t) => t.address?.toLowerCase()).filter(Boolean) as string[];
-	const ccRecipients = (parsedEmail.cc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
-	const bccRecipients = (parsedEmail.bcc || []).map((e) => e.address?.toLowerCase()).filter(Boolean) as string[];
+	const allowedAddresses = ((env.EMAIL_ADDRESSES ?? []) as string[]).map((a) =>
+		a.toLowerCase(),
+	);
+	const allRecipients = parsedEmail.to
+		.map((t) => t.address?.toLowerCase())
+		.filter(Boolean) as string[];
 
 	let mailboxId: string | undefined;
 	if (allowedAddresses.length > 0) {
 		mailboxId = allRecipients.find((addr) => allowedAddresses.includes(addr));
-		if (!mailboxId) { console.log(`Ignoring email: no recipient matches EMAIL_ADDRESSES.`); return; }
-	} else { mailboxId = allRecipients[0]; }
-	if (!mailboxId) throw new Error("received email with no valid recipient address");
-
-	const messageId = crypto.randomUUID();
-	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) { console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`); return; }
-
-	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
-
-	const attachmentData: StoredAttachment[] = [];
-	if (parsedEmail.attachments) {
-		for (const att of parsedEmail.attachments) {
-			const attId = crypto.randomUUID();
-			const filename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
-			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, att.content);
-			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
-				size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
-				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
+		if (!mailboxId) {
+			console.log("Ignoring email: no recipient matches EMAIL_ADDRESSES.");
+			return;
 		}
+	} else {
+		mailboxId = allRecipients[0];
+	}
+	if (!mailboxId) {
+		throw new Error("received email with no valid recipient address");
 	}
 
-	const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
-	const inReplyTo = parsedEmail.inReplyTo ? extractMsgId(parsedEmail.inReplyTo) : null;
-	const emailReferences = parsedEmail.references ? parsedEmail.references.split(/\s+/).filter(Boolean).map(extractMsgId) : [];
-	let threadId = emailReferences[0] || inReplyTo || messageId;
-
-	if (!inReplyTo && emailReferences.length === 0) {
-		const subjectThread = await (stub as any).findThreadBySubject(parsedEmail.subject || "", parsedEmail.from?.address || undefined);
-		if (subjectThread) threadId = subjectThread;
+	if (!(await env.BUCKET.head(`mailboxes/${mailboxId}.json`))) {
+		console.log(`Ignoring email for ${mailboxId}: mailbox does not exist`);
+		return;
 	}
 
-	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
+	const sourceMessageId = parsedEmail.messageId
+		? parsedEmail.messageId.replace(/[<>]/g, "")
+		: undefined;
 
-	await stub.createEmail(Folders.INBOX, {
-		id: messageId, subject: parsedEmail.subject || "",
-		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
-		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
-		date: new Date().toISOString(), // uses receive time, not the email's Date header
-		body: parsedEmail.html || parsedEmail.text || "",
-		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
-		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
-	}, attachmentData);
-
-	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
-	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
-		method: "POST", headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ mailboxId, emailId: messageId, sender: (parsedEmail.from?.address || "").toLowerCase(), subject: parsedEmail.subject || "", threadId }),
-	})).catch((e) => console.error("Auto-draft trigger failed:", (e as Error).message)));
+	await ingestRawEmail({
+		env,
+		ctx,
+		mailboxId,
+		raw: rawEmail,
+		source: {
+			provider: "routing",
+			messageId: sourceMessageId,
+			accountId: mailboxId,
+		},
+	});
 }
 
 export { app, receiveEmail };
