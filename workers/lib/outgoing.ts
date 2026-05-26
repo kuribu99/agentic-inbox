@@ -36,9 +36,18 @@ function isExpired(expiresAt?: string) {
 	return Date.now() > Date.parse(expiresAt) - 5 * 60 * 1000;
 }
 
-function resolveSendConnection(connections: MailboxConnection[]) {
-	return connections.find(
+function resolveSendConnection(
+	connections: MailboxConnection[],
+	fromEmail?: string,
+) {
+	const providerConnections = connections.filter(
 		(conn) => conn.sendMode === "provider" && conn.status === "connected",
+	);
+	if (providerConnections.length === 0) return undefined;
+	if (!fromEmail) return providerConnections[0];
+	const normalized = fromEmail.toLowerCase();
+	return providerConnections.find(
+		(conn) => conn.email.toLowerCase() === normalized,
 	);
 }
 
@@ -93,7 +102,9 @@ export async function sendOutgoingEmail(params: {
 	const { env, mailboxId, message } = params;
 	const settings = await loadMailboxSettings(env.BUCKET, mailboxId);
 	const connections = ensureConnections(settings);
-	const sendConn = resolveSendConnection(connections);
+	const fromEmail =
+		typeof message.from === "string" ? message.from : message.from.email;
+	const sendConn = resolveSendConnection(connections, fromEmail);
 
 	if (!sendConn) {
 		await sendEmail(env.EMAIL, message);

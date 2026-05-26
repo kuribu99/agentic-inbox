@@ -101,6 +101,21 @@ export async function refreshOutlookToken(opts: {
 	return (await res.json()) as TokenResponse;
 }
 
+export async function getOutlookProfile(opts: { accessToken: string }) {
+	const url = new URL(`${GRAPH_BASE}/me`);
+	url.searchParams.set("$select", "id,mail,userPrincipalName,displayName");
+	const res = await fetch(url, { headers: withBearer(opts.accessToken) });
+	if (!res.ok) {
+		throw new Error(`Outlook profile fetch failed: ${await res.text()}`);
+	}
+	return res.json() as Promise<{
+		id: string;
+		mail?: string | null;
+		userPrincipalName?: string | null;
+		displayName?: string | null;
+	}>;
+}
+
 export async function listOutlookMessages(opts: {
 	accessToken: string;
 	folderId?: string;

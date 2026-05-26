@@ -95,6 +95,21 @@ export async function refreshGmailToken(opts: {
 	return (await res.json()) as TokenResponse;
 }
 
+export async function getGmailProfile(opts: { accessToken: string }) {
+	const res = await fetch(`${API_BASE}/users/me/profile`, {
+		headers: withBearer(opts.accessToken),
+	});
+	if (!res.ok) {
+		throw new Error(`Gmail profile fetch failed: ${await res.text()}`);
+	}
+	return res.json() as Promise<{
+		emailAddress: string;
+		historyId?: string;
+		messagesTotal?: number;
+		threadsTotal?: number;
+	}>;
+}
+
 export async function listGmailMessages(opts: {
 	accessToken: string;
 	query?: string;

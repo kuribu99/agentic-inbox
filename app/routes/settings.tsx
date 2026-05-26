@@ -31,6 +31,7 @@ export default function SettingsRoute() {
 	const [displayName, setDisplayName] = useState("");
 	const [agentPrompt, setAgentPrompt] = useState("");
 	const [isSaving, setIsSaving] = useState(false);
+	const [oauthEmail, setOauthEmail] = useState("");
 	const [smtpEmail, setSmtpEmail] = useState("");
 	const [smtpDisplayName, setSmtpDisplayName] = useState("");
 	const [smtpResult, setSmtpResult] = useState<{ url: string; token: string } | null>(null);
@@ -39,6 +40,7 @@ export default function SettingsRoute() {
 		if (mailbox) {
 			setDisplayName(mailbox.settings?.fromName || mailbox.name || "");
 			setAgentPrompt(mailbox.settings?.agentSystemPrompt || "");
+			setOauthEmail(mailbox.email);
 			setSmtpEmail(mailbox.email);
 		}
 	}, [mailbox]);
@@ -72,12 +74,13 @@ export default function SettingsRoute() {
 		if (!mailboxId || !mailbox) return;
 		setSmtpResult(null);
 		try {
+			const email = oauthEmail.trim() || mailbox.email;
 			const res = await createConnectionMutation.mutateAsync({
 				mailboxId,
 				payload: {
 					provider,
-					email: mailbox.email,
-					displayName: mailbox.settings?.fromName || mailbox.name,
+					email,
+					displayName: displayName || mailbox.settings?.fromName || mailbox.name,
 					sendMode: "provider",
 				},
 			});
@@ -171,6 +174,16 @@ export default function SettingsRoute() {
 						<div className="rounded-lg border border-kumo-line bg-kumo-base p-5 space-y-4">
 							<div className="text-sm font-medium text-kumo-default">
 								Connections
+							</div>
+							<div className="space-y-2">
+								<div className="text-xs text-kumo-subtle">
+									Connect Gmail or Outlook accounts to sync multiple inboxes.
+								</div>
+								<Input
+									label="OAuth account email"
+									value={oauthEmail}
+									onChange={(e) => setOauthEmail(e.target.value)}
+								/>
 							</div>
 							<div className="flex flex-wrap gap-2">
 								<Button

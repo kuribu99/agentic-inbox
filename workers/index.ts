@@ -23,11 +23,13 @@ import {
 	DEFAULT_GMAIL_SCOPES,
 	buildGmailAuthUrl,
 	exchangeGmailCode,
+	getGmailProfile,
 } from "./providers/gmail";
 import {
 	DEFAULT_OUTLOOK_SCOPES,
 	buildOutlookAuthUrl,
 	exchangeOutlookCode,
+	getOutlookProfile,
 } from "./providers/outlook";
 import {
 	ConnectionProvider,
@@ -396,6 +398,42 @@ app.get("/api/v1/oauth/:provider/callback", async (c) => {
 		return c.json({ error: "Unsupported OAuth provider" }, 400);
 	}
 
+	let profileOverrides: {
+		email?: string;
+		displayName?: string;
+		externalAccountId?: string;
+	} = {};
+
+	try {
+		if (provider === "gmail") {
+			const profile = await getGmailProfile({
+				accessToken: tokenResponse.access_token,
+			});
+			if (profile.emailAddress) {
+				profileOverrides = {
+					email: profile.emailAddress.toLowerCase(),
+					externalAccountId: profile.emailAddress.toLowerCase(),
+				};
+			}
+		} else if (provider === "outlook") {
+			const profile = await getOutlookProfile({
+				accessToken: tokenResponse.access_token,
+			});
+			const email =
+				profile.mail || profile.userPrincipalName || connection.email;
+			profileOverrides = {
+				email: email?.toLowerCase(),
+				displayName: profile.displayName || connection.displayName,
+				externalAccountId: profile.id,
+			};
+		}
+	} catch (error) {
+		console.warn(
+			`OAuth profile fetch failed for ${provider}:`,
+			(error as Error).message,
+		);
+	}
+
 	const stub = c.env.MAILBOX.get(
 		c.env.MAILBOX.idFromName(payload.mailboxId),
 	) as unknown as {
@@ -415,6 +453,13 @@ app.get("/api/v1/oauth/:provider/callback", async (c) => {
 
 	const updatedConnection = {
 		...connection,
+		...(profileOverrides.email ? { email: profileOverrides.email } : {}),
+		...(profileOverrides.displayName
+			? { displayName: profileOverrides.displayName }
+			: {}),
+		...(profileOverrides.externalAccountId
+			? { externalAccountId: profileOverrides.externalAccountId }
+			: {}),
 		status: "connected",
 		lastError: null,
 		updatedAt: new Date().toISOString(),
