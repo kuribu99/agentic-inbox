@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-export type ConnectionProvider = "gmail" | "outlook" | "imap" | "smtp";
+export type ConnectionProvider = "gmail" | "outlook" | "imap" | "smtp" | "lark";
 export type ConnectionStatus = "pending" | "connected" | "error";
 export type SendMode = "cloudflare" | "provider";
 

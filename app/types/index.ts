@@ -8,7 +8,7 @@ export interface SignatureSettings {
 	html?: string;
 }
 
-export type ConnectionProvider = "gmail" | "outlook" | "imap" | "smtp";
+export type ConnectionProvider = "gmail" | "outlook" | "imap" | "smtp" | "lark";
 export type ConnectionStatus = "pending" | "connected" | "error";
 export type SendMode = "cloudflare" | "provider";
 

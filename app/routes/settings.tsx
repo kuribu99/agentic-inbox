@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Badge, Button, Input, Loader, useKumoToastManager } from "@cloudflare/kumo";
+import { Badge, Button, Input, Loader, Select, useKumoToastManager } from "@cloudflare/kumo";
 import { RobotIcon, ArrowCounterClockwiseIcon } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router";
@@ -34,6 +34,7 @@ export default function SettingsRoute() {
 	const [oauthEmail, setOauthEmail] = useState("");
 	const [smtpEmail, setSmtpEmail] = useState("");
 	const [smtpDisplayName, setSmtpDisplayName] = useState("");
+	const [smtpProvider, setSmtpProvider] = useState<"smtp" | "lark">("smtp");
 	const [smtpResult, setSmtpResult] = useState<{ url: string; token: string } | null>(null);
 
 	useEffect(() => {
@@ -107,7 +108,7 @@ export default function SettingsRoute() {
 			const res = await createConnectionMutation.mutateAsync({
 				mailboxId,
 				payload: {
-					provider: "smtp",
+					provider: smtpProvider,
 					email: smtpEmail,
 					displayName: smtpDisplayName || undefined,
 					sendMode: "cloudflare",
@@ -204,8 +205,23 @@ export default function SettingsRoute() {
 
 							<div className="space-y-3">
 								<div className="text-xs text-kumo-subtle">
-									Inbound SMTP (for providers like Lark). Use the generated URL and token
-									in your SMTP forwarder or external fetcher.
+									Inbound SMTP (generic or Lark). Use the generated URL and token in your SMTP
+									forwarder or external fetcher.
+								</div>
+								<div>
+									<span className="text-xs font-medium text-kumo-default mb-1 block">
+										Inbound provider
+									</span>
+									<Select
+										aria-label="Inbound provider"
+										value={smtpProvider}
+										onValueChange={(value) => {
+											if (value) setSmtpProvider(value as "smtp" | "lark");
+										}}
+									>
+										<Select.Option value="smtp">SMTP (generic)</Select.Option>
+										<Select.Option value="lark">Lark (SMTP)</Select.Option>
+									</Select>
 								</div>
 								<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
 									<Input
@@ -244,7 +260,8 @@ export default function SettingsRoute() {
 										>
 											<div className="space-y-1">
 												<div className="text-sm font-medium text-kumo-default">
-													{conn.provider.toUpperCase()} · {conn.email}
+													{conn.provider === "lark" ? "LARK (SMTP)" : conn.provider.toUpperCase()} ·{" "}
+													{conn.email}
 												</div>
 												<div className="text-kumo-subtle">
 													Send mode: {conn.sendMode} · Status: {conn.status}

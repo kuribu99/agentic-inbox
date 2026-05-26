@@ -68,7 +68,7 @@ const DraftBody = z.object({
 });
 
 const CreateConnectionBody = z.object({
-	provider: z.enum(["gmail", "outlook", "imap", "smtp"]),
+	provider: z.enum(["gmail", "outlook", "imap", "smtp", "lark"]),
 	email: z.string().email(),
 	displayName: z.string().optional(),
 	sendMode: z.enum(["cloudflare", "provider"]).optional(),
@@ -286,7 +286,7 @@ app.post("/api/v1/mailboxes/:mailboxId/connections", async (c) => {
 		};
 		const encrypted = await encryptJson(c.env, secretPayload);
 		await stub.setConnectionSecret(connectionId, body.provider, encrypted);
-	} else if (body.provider === "smtp") {
+	} else if (body.provider === "smtp" || body.provider === "lark") {
 		const stub = c.var.mailboxStub as unknown as {
 			setConnectionSecret: (id: string, provider: string, encrypted: string) => Promise<void>;
 		};
