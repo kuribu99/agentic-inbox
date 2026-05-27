@@ -75,6 +75,10 @@ Agentic Inbox can sync Gmail and Outlook accounts via OAuth. Configure the follo
    - `https://<your-worker-domain>/api/v1/oauth/gmail/callback`
    - `https://<your-worker-domain>/api/v1/oauth/outlook/callback`
 
+Multiple Gmail/Outlook connections are supported per mailbox. Outbound sending uses the provider connection
+only when the message `from` address matches the connected account email; otherwise it falls back to
+Cloudflare Email Service.
+
 ### SMTP / IMAP Inbound
 
 Cloudflare Workers cannot directly connect to IMAP/POP3. For providers that only support SMTP forwarding (e.g. Lark),

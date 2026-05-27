@@ -178,7 +178,8 @@ export default function SettingsRoute() {
 							</div>
 							<div className="space-y-2">
 								<div className="text-xs text-kumo-subtle">
-									Connect Gmail or Outlook accounts to sync multiple inboxes.
+									Connect Gmail or Outlook accounts to sync multiple inboxes. Sending uses the
+									provider connection only when the from address matches the connected account.
 								</div>
 								<Input
 									label="OAuth account email"
