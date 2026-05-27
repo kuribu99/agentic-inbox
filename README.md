@@ -53,8 +53,8 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 ## Getting Started
 
 ```bash
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 ### Configuration
@@ -95,7 +95,7 @@ You can also POST JSON with `{ "raw": "<base64>" }`. Use `INBOUND_SHARED_SECRET`
 ### Deploy
 
 ```bash
-npm run deploy
+bun run deploy
 ```
 
 ## Prerequisites
